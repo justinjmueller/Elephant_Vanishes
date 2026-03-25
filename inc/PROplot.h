@@ -35,6 +35,301 @@
 #include "TLine.h"
 namespace PROfit{
 
+    class ROOTFileWriter
+    {
+    public:
+        ROOTFileWriter(const ROOTFileWriter&) = delete;
+        ROOTFileWriter& operator=(const ROOTFileWriter&) = delete;
+
+        // Get the singleton instance
+        static ROOTFileWriter& instance()
+        {
+            static ROOTFileWriter instance;
+            return instance;
+        }
+
+        // Open a ROOT file
+        void open(const std::string & filename, const char * option = "RECREATE")
+        {
+            // Close any previously open file before opening a new one
+            if(file_ && file_->IsOpen())
+            {
+                log<LOG_WARNING>(L"ROOTFileWriter: File already open. Closing previous file.");
+                close();
+            }
+            
+            // Persist the current directory to restore it later
+            TDirectory * current_dir = gDirectory;
+
+            // Open the new file
+            file_ = new TFile(filename.c_str(), option);
+
+            // Check if the file was opened successfully
+            if(!file_ || file_->IsZombie())
+            {
+                log<LOG_ERROR>(L"ROOTFileWriter: Failed to open ROOT file: %1%") % filename.c_str();
+                if (file_)
+                {
+                    delete file_;
+                    file_ = nullptr;
+                }
+                if(current_dir) current_dir->cd();
+                throw std::runtime_error("Failed to open ROOT file: " + filename);
+            }
+
+            // Set the file name for reference
+            filename_ = filename;
+            log<LOG_INFO>(L"ROOTFileWriter: Opened ROOT file: %1%") % filename.c_str();
+
+            // Restore the original directory
+            if(current_dir) current_dir->cd();
+
+            // Create a TTree to store 1D histogram data
+            tree_hist1d_ = new TTree("hist1d", "1D histogram data");
+            tree_hist1d_->SetDirectory(nullptr);
+            tree_hist1d_->Branch("variable", &hist1d_variable_, "variable/i");
+            tree_hist1d_->Branch("mode", &hist1d_mode_, "mode/i");
+            tree_hist1d_->Branch("detector", &hist1d_detector_, "detector/i");
+            tree_hist1d_->Branch("channel", &hist1d_channel_, "channel/i");
+            tree_hist1d_->Branch("subchannel", &hist1d_subchannel_, "subchannel/i");
+            tree_hist1d_->Branch("prefix", &hist1d_prefix_);
+            tree_hist1d_->Branch("bin_index", &hist1d_bin_index_, "bin_index/I");
+            tree_hist1d_->Branch("bin_center", &hist1d_bin_center_, "bin_center/D");
+            tree_hist1d_->Branch("bin_low_edge", &hist1d_bin_low_edge_, "bin_low_edge/D");
+            tree_hist1d_->Branch("bin_high_edge", &hist1d_bin_high_edge_, "bin_high_edge/D");
+            tree_hist1d_->Branch("bin_content", &hist1d_bin_content_, "bin_content/D");
+            tree_hist1d_->Branch("bin_error",   &hist1d_bin_error_,   "bin_error/D");
+
+            // Create a TTree to store error band data
+            tree_errorband_ = new TTree("errorband", "Error band data");
+            tree_errorband_->SetDirectory(nullptr);
+            tree_errorband_->Branch("variable", &errband_variable_, "variable/i");
+            tree_errorband_->Branch("mode", &errband_mode_, "mode/i");
+            tree_errorband_->Branch("detector", &errband_detector_, "detector/i");
+            tree_errorband_->Branch("channel", &errband_channel_, "channel/i");
+            tree_errorband_->Branch("subchannel", &errband_subchannel_, "subchannel/i");
+            tree_errorband_->Branch("prefix", &errband_prefix_);
+            tree_errorband_->Branch("point_index", &errband_point_index_, "point_index/I");
+            tree_errorband_->Branch("x_value", &errband_x_value_, "x_value/D");
+            tree_errorband_->Branch("y_value", &errband_y_value_, "y_value/D");
+            tree_errorband_->Branch("error_y_low", &errband_error_y_low_, "error_y_low/D");
+            tree_errorband_->Branch("error_y_high", &errband_error_y_high_, "error_y_high/D");
+
+            // Create a TTree to store fractional systematic data
+            tree_frac_syst_ = new TTree("frac_syst", "Fractional systematic data");
+            tree_frac_syst_->SetDirectory(nullptr);
+            tree_frac_syst_->Branch("mode", &frac_syst_mode_, "mode/i");
+            tree_frac_syst_->Branch("detector", &frac_syst_detector_, "detector/i");
+            tree_frac_syst_->Branch("channel", &frac_syst_channel_, "channel/i");
+            tree_frac_syst_->Branch("tag", &frac_syst_tag_);
+            tree_frac_syst_->Branch("systname", &frac_syst_systname_);
+            tree_frac_syst_->Branch("bin_index", &frac_syst_bin_index_, "bin_index/I");
+            tree_frac_syst_->Branch("bin_center", &frac_syst_bin_center_, "bin_center/D");
+            tree_frac_syst_->Branch("bin_low_edge", &frac_syst_bin_low_edge_, "bin_low_edge/D");
+            tree_frac_syst_->Branch("bin_high_edge", &frac_syst_bin_high_edge_, "bin_high_edge/D");
+            tree_frac_syst_->Branch("bin_content", &frac_syst_bin_content_, "bin_content/D");
+        }
+
+        // Close the current file
+        void close()
+        {
+            if(file_ && file_->IsOpen())
+            {
+                // Persist the current directory to restore it later
+                TDirectory * current_dir = gDirectory;
+
+                file_->cd();
+
+                if(tree_hist1d_)
+                {
+                    tree_hist1d_->SetDirectory(file_); 
+                    tree_hist1d_->Write("hist1d", TObject::kOverwrite);
+                    tree_hist1d_ = nullptr;
+                }
+                if(tree_errorband_)
+                {
+                    tree_errorband_->SetDirectory(file_);
+                    tree_errorband_->Write("errorband", TObject::kOverwrite);
+                    tree_errorband_ = nullptr;
+                }
+                if(tree_frac_syst_)
+                {
+                    tree_frac_syst_->SetDirectory(file_);
+                    tree_frac_syst_->Write("frac_syst", TObject::kOverwrite);
+                    tree_frac_syst_ = nullptr;
+                }
+
+                file_->Close();
+                //delete file_;
+                file_ = nullptr;
+            }
+            filename_.clear();
+        }
+
+        // Check if the file is already open
+        bool is_open() const
+        {
+            return file_ && file_->IsOpen();
+        }
+
+        // Set the variable number
+        void set_variable(UInt_t variable)
+        {
+            hist1d_variable_ = variable;
+            errband_variable_ = variable;
+        }
+
+        // Static member function to get the variable number from the file name
+        static int extract_variable_number(const std::string& filename)
+        {
+            // Look for pattern "Variable_XX"
+            size_t pos = filename.find("Variable_");
+            if(pos == std::string::npos) return -1;
+            
+            pos += 9;
+            
+            // Extract digits
+            size_t end = pos;
+            while (end < filename.length() && std::isdigit(filename[end]))
+                end++;
+            
+            if (end > pos)
+                return std::stoi(filename.substr(pos, end - pos));
+            
+            return -1;
+        }
+
+        // Populate a row in the hist1d TTree
+        void fill_hist1d(const TH1D& hist, const std::string& prefix, 
+                            size_t mode, size_t det, size_t channel, size_t subchannel)
+        {
+            if(!is_open() || !tree_hist1d_) return;
+
+            for(int i = 1; i <= hist.GetNbinsX(); ++i)
+            {
+                hist1d_mode_ = mode;
+                hist1d_detector_ = det;
+                hist1d_channel_ = channel;
+                hist1d_subchannel_ = subchannel;
+                *hist1d_prefix_ = prefix;
+                hist1d_bin_index_ = i - 1;
+                hist1d_bin_center_ = hist.GetBinCenter(i);
+                hist1d_bin_low_edge_ = hist.GetBinLowEdge(i);
+                hist1d_bin_high_edge_ = hist.GetBinLowEdge(i) + hist.GetBinWidth(i);
+                hist1d_bin_content_ = hist.GetBinContent(i);
+                hist1d_bin_error_   = hist.GetBinError(i);
+                if(tree_hist1d_) tree_hist1d_->Fill();
+            }
+        }
+
+        // Populate rows in the error band TTree
+        void fill_errorband(const TGraphAsymmErrors* errband, const std::string& prefix,
+                            size_t mode, size_t det, size_t channel, size_t subchannel)
+        {
+            if(!errband || !is_open() || !tree_errorband_) return;
+
+            for(int i = 0; i < errband->GetN(); ++i)
+            {
+                double x, y;
+                errband->GetPoint(i, x, y);
+                errband_mode_ = mode;
+                errband_detector_ = det;
+                errband_channel_ = channel;
+                errband_subchannel_ = subchannel;
+                *errband_prefix_ = prefix;
+                errband_point_index_ = i;
+                errband_x_value_ = x;
+                errband_y_value_ = y;
+                errband_error_y_low_ = errband->GetErrorYlow(i);
+                errband_error_y_high_ = errband->GetErrorYhigh(i);
+                if(tree_errorband_) tree_errorband_->Fill();
+            }
+        }
+
+        // Populate rows in the fractional systematic TTree
+        void fill_fractional_systematic(const TH1F* hist, const std::string& tag,
+                                const std::string& systname,
+                                size_t mode, size_t det, size_t channel)
+        {
+            if(!hist || !is_open() || !tree_frac_syst_) return;
+            
+            for(int i = 1; i <= hist->GetNbinsX(); ++i)
+            {
+                frac_syst_mode_ = mode;
+                frac_syst_detector_ = det;
+                frac_syst_channel_ = channel;
+                *frac_syst_tag_ = tag;
+                *frac_syst_systname_ = systname;
+                frac_syst_bin_index_ = i - 1;
+                frac_syst_bin_center_ = hist->GetBinCenter(i);
+                frac_syst_bin_low_edge_ = hist->GetBinLowEdge(i);
+                frac_syst_bin_high_edge_ = hist->GetBinLowEdge(i) + hist->GetBinWidth(i);
+                frac_syst_bin_content_ = hist->GetBinContent(i);
+                if(tree_frac_syst_) tree_frac_syst_->Fill();
+            }
+        }
+
+    private:
+        ROOTFileWriter() : file_(nullptr), 
+            tree_hist1d_(nullptr), hist1d_prefix_(new std::string()),
+            tree_errorband_(nullptr), errband_prefix_(new std::string()),
+            tree_frac_syst_(nullptr), frac_syst_tag_(new std::string()), frac_syst_systname_(new std::string()) {}
+
+        TFile* file_;
+        std::string filename_;
+
+        // Variables for hist1d TTree
+        TTree* tree_hist1d_;
+        UInt_t hist1d_variable_;
+        UInt_t hist1d_mode_;
+        UInt_t hist1d_detector_;
+        UInt_t hist1d_channel_;
+        UInt_t hist1d_subchannel_;
+        std::string * hist1d_prefix_;
+        Int_t hist1d_bin_index_;
+        Double_t hist1d_bin_center_;
+        Double_t hist1d_bin_low_edge_;
+        Double_t hist1d_bin_high_edge_;
+        Double_t hist1d_bin_content_;
+        Double_t hist1d_bin_error_;
+
+        // Variables for error band TTree
+        TTree* tree_errorband_;
+        UInt_t errband_variable_;
+        UInt_t errband_mode_;
+        UInt_t errband_detector_;
+        UInt_t errband_channel_;
+        UInt_t errband_subchannel_;
+        std::string * errband_prefix_;
+        Int_t errband_point_index_;
+        Double_t errband_x_value_;
+        Double_t errband_y_value_;
+        Double_t errband_error_y_low_;
+        Double_t errband_error_y_high_;
+
+        // Variables for fractional systematic TTree
+        TTree* tree_frac_syst_;
+        UInt_t frac_syst_mode_;
+        UInt_t frac_syst_detector_;
+        UInt_t frac_syst_channel_;
+        std::string * frac_syst_tag_;
+        std::string * frac_syst_systname_;
+        Int_t frac_syst_bin_index_;
+        Double_t frac_syst_bin_center_;
+        Double_t frac_syst_bin_low_edge_;
+        Double_t frac_syst_bin_high_edge_;
+        Double_t frac_syst_bin_content_;
+
+        ~ROOTFileWriter()
+        { 
+            // String pointers deleted after file is closed
+            delete hist1d_prefix_;
+            delete errband_prefix_;
+            delete frac_syst_tag_;
+            delete frac_syst_systname_;
+        }
+    };
+
     struct PlotBounds {
         float xmin = -9999;
         float xmax = -9999;

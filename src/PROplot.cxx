@@ -5,6 +5,65 @@
 
 namespace PROfit{
 
+    void write_histogram(const TH1D& hist, 
+                            const std::string& prefix, 
+                            size_t mode, size_t det, size_t channel, size_t subchannel)
+    {
+        // Persist the current directory
+        TDirectory * current_dir = gDirectory;
+
+        // Open a ROOT file if not already open.
+        if(!ROOTFileWriter::instance().is_open())
+            ROOTFileWriter::instance().open("histograms.root");
+        
+        // Fill the ROOT file with histogram data for later retrieval
+        ROOTFileWriter::instance().fill_hist1d(hist, prefix, mode, det, channel, subchannel);
+
+        // Restore the original directory
+        if(current_dir) current_dir->cd();
+    }
+
+    void write_errorband(const TGraphAsymmErrors* errband,
+                            const std::string& prefix,
+                            size_t mode, size_t det, size_t channel, size_t subchannel)
+    {
+        if(!errband) return;
+
+        // Persist the current directory
+        TDirectory * current_dir = gDirectory;
+
+        // Open a ROOT file if not already open.
+        if(!ROOTFileWriter::instance().is_open())
+            ROOTFileWriter::instance().open("histograms.root");
+        
+        // Fill the ROOT file with error band data for later retrieval
+        ROOTFileWriter::instance().fill_errorband(errband, prefix, mode, det, channel, subchannel);
+
+        // Restore the original directory
+        if(current_dir) current_dir->cd();
+    }
+
+    void write_fractional_systematic(const TH1F* hist,
+                                const std::string& tag,
+                                const std::string& systname,
+                                size_t mode, size_t det, size_t channel)
+    {
+        if(!hist) return;
+        
+        // Persist the current directory
+        TDirectory * current_dir = gDirectory;
+
+        // Open a ROOT file if not already open.
+        if(!ROOTFileWriter::instance().is_open())
+            ROOTFileWriter::instance().open("histograms.root");
+        
+        // Fill the ROOT file with fractional systematic data for later retrieval
+        ROOTFileWriter::instance().fill_fractional_systematic(hist, tag, systname, mode, det, channel);
+
+        // Restore the original directory
+        if(current_dir) current_dir->cd();
+    }
+
     std::map<std::string, std::unique_ptr<TH1D>> getCV1DHists(const PROspec &spec, const PROconfig& inconfig, bool scale, int other_index) {
         std::map<std::string, std::unique_ptr<TH1D>> hists;  
 
@@ -503,6 +562,23 @@ namespace PROfit{
                     }
                 }
 
+                // Save ratio histograms and error bands to ROOT file
+                size_t mode_num = idx_num / (config.m_num_detectors * config.m_num_channels);
+                size_t det_num  = (idx_num / config.m_num_channels) % config.m_num_detectors;
+                size_t chan_num = idx_num % config.m_num_channels;
+
+                write_histogram(*data_ratio, "RATIO_DATA", mode_num, det_num, chan_num, idx_den);
+                write_histogram(*cv_ratio,   "RATIO_CV",   mode_num, det_num, chan_num, idx_den);
+                if(errband)
+                    write_errorband(channel_errband, "RATIO_CV", mode_num, det_num, chan_num, idx_den);
+                if(has_bf && bf_ratio) {
+                    write_histogram(*bf_ratio, "RATIO_BF", mode_num, det_num, chan_num, idx_den);
+                    if(posterrband && post_channel_errband)
+                        write_errorband(post_channel_errband, "RATIO_BF", mode_num, det_num, chan_num, idx_den);
+                    if(errband && err_ratio)
+                        write_histogram(*err_ratio, "RATIO_ERR", mode_num, det_num, chan_num, idx_den);
+                }
+
                 leg->AddEntry(data_ratio, "Data", "pe");
                 leg->AddEntry(cv_ratio, "CV Prediction", "l");
                 if(has_bf && bf_ratio) {
@@ -892,11 +968,16 @@ namespace PROfit{
         t->DrawText(0.895, 0.955, pv.c_str()); 
 
         leg->Draw("same");
+
         c->Print(filename.c_str());
+	
         log<LOG_DEBUG>(L"%1% || Finishing Plotting 1D Histogram %2%") % __func__ % hist_titles.c_str();
     }
 
     void plot_channels(const std::string &filename, const PROconfig &config, std::optional<PROspec> cv, std::optional<PROspec> best_fit, std::optional<PROdata> data, std::optional<PROerrorbar> errband, std::optional<PROerrorbar> posterrband, std::optional<PROsyst> pre_allcovsyst, std::optional<PROsyst> post_allcovsyst, std::vector<TPaveText> &texts, PlotBounds &bounds, PlotOptions opt, int other_index) {
+
+        int variable_num = ROOTFileWriter::extract_variable_number(filename);
+        ROOTFileWriter::instance().set_variable(static_cast<size_t>(variable_num));
 
         log<LOG_DEBUG>(L"%1% || Starting plot_channels") % __func__;
         std::string rat_y_title = bool(opt&PlotOptions::DataMCRatio) ? "Data/MC" : "Data/Best-Fit";
@@ -1207,6 +1288,33 @@ namespace PROfit{
                     }
                     // should probably be switching this to a more clear boolean...
                     plot_hist1ds(&c, &cv_hist, channel_errband, cvstack, &subplots, bf_hist, post_channel_errband, data_hist, &dat_str, opt, hist_titles, ratio_titles, filename, bounds, text);
+
+                    // Save the total CV histogram
+                    write_histogram(cv_hist, "CV", mode, det, channel, -1);
+
+                    // Save each subchannel component
+                    size_t subchannel_start_idx = global_subchannel_index - config.m_num_subchannels[channel];
+                    for(size_t subchannel = 0; subchannel < config.m_num_subchannels[channel]; ++subchannel){
+                        const std::string& subchannel_name = config.m_fullnames[subchannel_start_idx + subchannel];
+                        if(cv1dhists.count(subchannel_name)) {
+                            write_histogram(*cv1dhists[subchannel_name], "CV", mode, det, channel, subchannel);
+                        }
+                    }
+
+                    // Save best-fit (usually not broken down by subchannel)
+                    if(bf_hist) write_histogram(*bf_hist, "BF", mode, det, channel, -1);
+
+                    // Save data (not broken down by subchannel)
+                    if(data_hist) write_histogram(*data_hist, "DATA", mode, det, channel, -1);
+
+                    // Save systematic error bands (asymmetric)
+                    if(channel_errband) {
+                        write_errorband(channel_errband, "CV", mode, det, channel, -1);
+                    }
+                    if(post_channel_errband) {
+                        write_errorband(post_channel_errband, "BF", mode, det, channel, -1);
+                    }
+
                     ++global_channel_index;
                     if(pre_allcovsyst.has_value()){
                         cv_hists.push_back(cv_hist);
@@ -1218,6 +1326,7 @@ namespace PROfit{
                 }
             }
         }
+
         c.Print((filename+"]").c_str());
 
         if(pre_allcovsyst.has_value() && data_hists.size() >= 2){
@@ -1231,7 +1340,6 @@ namespace PROfit{
                 plot_detector_ratios(config, data_hists, cv_hists, errband, bf_hists, posterrband, *pre_matrices["collapsed_total_cor"], *post_matrices["collapsed_total_cor"],  filename, other_index);
             }
         }
-
 
         log<LOG_DEBUG>(L"%1% || Finishing plot_channels") % __func__;
     }
@@ -1259,8 +1367,6 @@ namespace PROfit{
             1,  // Solid (base style)
             1,  // Dashed
         };
-
-
 
         //some testing
         for (const auto& [syst_name, tags] : config.m_mcgen_variation_tags) {
@@ -1413,7 +1519,7 @@ namespace PROfit{
                         hsum->Reset();
                         std::vector<TH1F*> hvec;
                         int i = 0;
-			size_t channel_nbins_y = 1;// start with assumption of 1d
+			            size_t channel_nbins_y = 1;// start with assumption of 1d
                         size_t channel_nbins_x = config.m_channel_variable_bins[channel][other_index].NBinsAlong(0);
 
                         for(const auto & systname:vec){
@@ -1453,25 +1559,28 @@ namespace PROfit{
 
                             if(config.m_channel_variable_dims[channel][other_index] == 2)  channel_nbins_y = config.m_channel_variable_bins[channel][other_index].NBinsAlong(1);
 
-			    Eigen::VectorXf VarVec = Eigen::VectorXf::Zero(channel_nbins_x);
-			    Eigen::VectorXf diag1d = Eigen::VectorXf::Zero(channel_nbins_x);
-			    Eigen::MatrixXf channel_diag = collapsed_diag(channel_bins, channel_bins);
+                            Eigen::VectorXf VarVec = Eigen::VectorXf::Zero(channel_nbins_x);
+                            Eigen::VectorXf diag1d = Eigen::VectorXf::Zero(channel_nbins_x);
+                            Eigen::MatrixXf channel_diag = collapsed_diag(channel_bins, channel_bins);
 
                             for(int i = 0; i < channel_nbins_x; i++){
-			        for(int j = channel_nbins_y*i; j < channel_nbins_y*(i+1); j++){
-				    diag1d(i) += channel_diag(j, j);
-			            for(int k = channel_nbins_y*i; k < channel_nbins_y*(i+1); k++){
-			                VarVec(i) += channel_cov(j, k);
-			            }
-			        }
-			    }
+                                for(int j = channel_nbins_y*i; j < channel_nbins_y*(i+1); j++){
+                                    diag1d(i) += channel_diag(j, j);
+                                    for(int k = channel_nbins_y*i; k < channel_nbins_y*(i+1); k++){
+                                        VarVec(i) += channel_cov(j, k);
+                                    }
+                                }
+			                }
 
-			    float inv_diag1d;
+			                float inv_diag1d;
                             for (size_t i = 0; i < channel_nbins_x; ++i) {
-				inv_diag1d = 1/diag1d(i);
+				                inv_diag1d = 1/diag1d(i);
                                 h->SetBinContent(i+1, sqrt(inv_diag1d*VarVec(i)*inv_diag1d));
                                 hsum->SetBinContent(i+1, hsum->GetBinContent(i+1)+inv_diag1d*VarVec(i)*inv_diag1d);
                             }
+
+                            // Dump fractional systematic uncertainties to CSV
+                            write_fractional_systematic(h, tag, systname, mode, det, channel);
 
                             const std::string &plotname = config.m_mcgen_variation_plotname_map.at(systname);
                             leg->AddEntry(h, plotname.c_str(), "l");
@@ -1483,6 +1592,10 @@ namespace PROfit{
                         for (size_t i = 0; i < channel_nbins_x; ++i) {
                             hsum->SetBinContent(i+1, sqrt(hsum->GetBinContent(i+1)));
                         }
+
+                        // Dump total fractional uncertainty (sum of sums) to CSV
+                        write_fractional_systematic(hsum, tag, "SUM", mode, det, channel);
+
                         leg->AddEntry(hsum,"Sum","l");
 
                         // Diagnostic: Check hsum for bad values before drawing
@@ -1555,6 +1668,22 @@ namespace PROfit{
                     for (size_t i = 0; i < nbins; ++i) {
                         hsum->SetBinContent(i+1, sqrt(hsum->GetBinContent(i+1)));
                     }
+
+                    // Calculate and save total sum of all tags
+                    TH1F* hsum_total = new TH1F(("TotalSum_"+std::to_string(global_channel_index)).c_str(),("Total Summary! "+name).c_str(), bin_edges.size()-1, bin_edges.data());
+                    hsum_total->Reset();
+                    for(size_t t=0; t < vsums.size(); t++){
+                        for (size_t i = 0; i < nbins; ++i) {
+                            hsum_total->SetBinContent(i+1, hsum_total->GetBinContent(i+1) + pow(vsums.at(t)->GetBinContent(i+1), 2));
+                        }
+                    }
+                    for (size_t i = 0; i < nbins; ++i) {
+                        hsum_total->SetBinContent(i+1, sqrt(hsum_total->GetBinContent(i+1)));
+                    }
+
+                    // SAVE TOTAL SUM TO CSV
+                    write_fractional_systematic(hsum_total, "TOTAL", "SUM", mode, det, channel);
+
                     leg->AddEntry(hsum,"Sum","l");
                     hsum->SetXTitle(config.m_channel_plotnames[channel].c_str());
                     hsum->SetTitle(("Summary: "+name).c_str());

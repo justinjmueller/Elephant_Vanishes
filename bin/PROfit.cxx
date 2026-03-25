@@ -53,7 +53,6 @@ std::wostream *OSTREAM = &wcout;
 std::wofstream LOG_FILE_STREAM;
 bool LOGGING_TO_FILE = false;
 
-
 int main(int argc, char* argv[])
 {
     gStyle->SetOptStat(0);
@@ -912,6 +911,7 @@ int main(int argc, char* argv[])
 	}
         if(binwidth_scale) opt |= PlotOptions::BinWidthScaled;
         if(area_normalized) opt |= PlotOptions::AreaNormalized;
+        ROOTFileWriter::instance().open(final_output_tag + "_PROfile_histograms.root");
         plot_channels((final_output_tag+"_PROfile_hists.pdf"), config, cv, bf, data, err_band, post_err_band, {}, {}, texts, pbounds, opt);
 
         TCanvas c;
@@ -1265,6 +1265,7 @@ int main(int argc, char* argv[])
         if(binwidth_scale) opt |= PlotOptions::BinWidthScaled;
         if(area_normalized) opt |= PlotOptions::AreaNormalized;
         std::vector<PROspec> variable_cvs;
+        ROOTFileWriter::instance().open(final_output_tag + "_PROplot_histograms.root");
         for(size_t io = 0; io < config.m_num_variables; ++io) {
 
             variable_cvs.push_back(FillSpectra(config, prop, variable_systs[config.i_prime],*model,CVParams, !eventbyevent, io));
@@ -1452,10 +1453,13 @@ int main(int argc, char* argv[])
 
         std::vector<PROerrorbar> other_err_bands;
         for(size_t io = 0; io < config.m_num_variables; ++io) {
-            if(!config.m_channel_variable_plot_bool.at(io))continue;// For now skip the L/E 250 bin. 
+            if(!config.m_channel_variable_plot_bool.at(io))continue;// For now skip the L/E 250 bin.
             other_err_bands.push_back(getErrorBand(config, prop, variable_systs[io], *model, variable_cvs[io], CVParams, binwidth_scale, io));
-            plot_channels(final_output_tag+"_PROplot_Variable_"+std::to_string(io)+"_ErrorBand.pdf", config, variable_cvs[io], {}, variable_data[io], 
+            plot_channels(final_output_tag+"_PROplot_Variable_"+std::to_string(io)+"_ErrorBand.pdf", config, variable_cvs[io], {}, variable_data[io],
                     other_err_bands.back(), {}, {}, {}, other_channel_chitexts[io], pbounds, opt | PlotOptions::DataMCRatio, io);
+        }
+        if(ROOTFileWriter::instance().is_open()) {
+            ROOTFileWriter::instance().close();
         }
 
 
@@ -1566,6 +1570,10 @@ int main(int argc, char* argv[])
         }
 
         fout.Close();
+
+        if(ROOTFileWriter::instance().is_open()) {
+            ROOTFileWriter::instance().close();
+        }
     }
 
     //***********************************************************************
@@ -1956,8 +1964,12 @@ int main(int argc, char* argv[])
 	}
         if(binwidth_scale) opt |= PlotOptions::BinWidthScaled;
         if(area_normalized) opt |= PlotOptions::AreaNormalized;
+        ROOTFileWriter::instance().open(final_output_tag + "_PROglobal_histograms.root");
         plot_channels((final_output_tag+"_PROglobal_hists.pdf"), config, cv, bf, data, err_band, post_err_band, pre_allcovsyst, post_allcovsyst, texts, pbounds,opt);
 
+        if(ROOTFileWriter::instance().is_open()) {
+            ROOTFileWriter::instance().close();
+        }
 
     }
 
